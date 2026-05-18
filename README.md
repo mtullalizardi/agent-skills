@@ -47,14 +47,10 @@ npx skills add datadog-labs/agent-skills \
   --full-depth -y
 ```
 
+For ALL skills:
+
 ```bash
-npx skills add datadog-labs/agent-skills \
-  --skill dd-pup \
-  --skill dd-monitors \
-  --skill dd-logs \
-  --skill dd-apm \
-  --skill dd-docs \
-  --full-depth -y
+npx skills add datadog-labs/agent-skills --full-depth -y
 ```
 
 ### LLM Observability (LLMO)
