@@ -4,9 +4,12 @@ description: >-
   Load this skill when the user wants to run an online experiment (live-traffic A/B test) on an
   LLM application instrumented with Agent Observability: compare two versions of a prompt, model,
   or behavior using a Datadog feature flag, score metrics from evaluations, and cost and token
-  metrics. Covers creating the flag, wiring the app, creating the experiment, attaching metrics,
-  setting the traffic split, and starting it. Triggers: online experiment, A/B test an LLM app,
-  test a prompt change on live traffic, experiment with feature flag and evaluation score.
+  metrics. Works for a change that already exists (such as a Git branch compared to main) and for
+  a change the agent writes from a description (such as a cheaper model or a shorter prompt).
+  Covers creating the flag, wiring the app, creating the experiment, attaching metrics, setting
+  the traffic split, and starting it. Triggers: online experiment, A/B test an LLM app, test a
+  prompt change on live traffic, compare my branch to main on live traffic, compare models on
+  live traffic, experiment with feature flag and evaluation score.
 ---
 
 # Set up an online experiment on an LLM application
@@ -18,7 +21,8 @@ Online experiments for Agent Observability may require the feature to be enabled
 ## When to use this skill
 
 - The user wants to test a change (prompt, model, retrieval strategy, tool set) on real traffic rather than a fixed dataset.
-- The user has a change on a branch and wants to know whether it is better, cheaper, or both in production.
+- The change already exists, for example in the current Git branch or in uncommitted edits, and the user wants to know whether it is better, cheaper, or both in production.
+- The change is only described, for example "compare the current model and a cheaper model" or "try a more concise system prompt", and the user expects you to write the treatment.
 - The user wants an experiment whose metrics come from Agent Observability evaluations, token counts, or cost.
 
 Do **not** use it for offline experiments over a dataset (use the LLM Observability experiment tooling), for analyzing an experiment that already ran (`agent-observability-experiment-analyzer` or the Datadog experiments tooling), or for promoting an existing offline experiment.
@@ -27,7 +31,7 @@ Do **not** use it for offline experiments over a dataset (use the LLM Observabil
 
 - **Use one setup approval checkpoint.** Before any write, finish the read-only discovery in Phase 0, make sensible recommendations, and present the complete proposed setup in one confirmation request. Include the flag, variants, metric definitions or reused metric IDs, desired-change directions, environment, subject, traffic split, code change, and every organization write you intend to make. Once the user approves that proposal, do not ask again before each flag, draft, link, metric, enablement, or allocation write that was clearly listed.
 - **Make production risk explicit in that same checkpoint.** If the proposal enables a production flag or replaces production allocations, say that the change takes effect immediately. A clear approval of that production proposal is sufficient; do not add a second confirmation that repeats the same information. Ask again only if read-back reveals a materially different or destructive replacement that was not in the approved proposal.
-- **Starting is separate unless already explicit.** Start only if the user explicitly asked to start the experiment. If the original request included starting, include it in the single setup proposal; otherwise finish with a draft and ask no start question until the user requests it.
+- **Starting is separate unless already explicit.** Start only if the user explicitly asked to start the experiment. If the original request included starting, include it in the single setup proposal; otherwise finish with a draft and ask no start question until the user requests it. A request phrased as "Start an online experiment to compare…" asks you to set up the experiment; it is not by itself a request to start it. Treat it as explicit only when the user also asks to launch it or begin splitting traffic now.
 - **Go one step at a time and read back.** After each write, read the object back and report what the server actually stored, not what you sent.
 - **Never attach metrics in parallel or alongside other metric edits.** The attach operation sends the experiment's complete metric set to the server, so concurrent edits can overwrite each other.
 - **Report failures plainly.** If a step is refused (permissions, production restrictions), say so and give the user the manual alternative. Do not look for a workaround.
@@ -35,10 +39,28 @@ Do **not** use it for offline experiments over a dataset (use the LLM Observabil
 
 ## Phase 0 — Discover, recommend, and confirm once
 
-Do not interrupt the investigation to ask for one input at a time. First perform all available read-only discovery:
+Do not interrupt the investigation to ask for one input at a time. First work out what the user wants to compare, then perform all available read-only discovery.
+
+### Identify what is being compared
+
+Requests come in a few shapes. Decide which one applies before inspecting code, because it decides where the treatment comes from:
+
+| Request shape | Example | Control | Treatment |
+|---|---|---|---|
+| Existing change in Git | "compare the changes in my current Git branch to main" | Behavior on the base branch (main, unless the user names another). | The behavior the branch adds. Read the diff against the merge base (`git diff <base>...HEAD`), plus uncommitted edits if the user refers to them. |
+| Described change | "compare the current model and a cheaper model", "try a more concise system prompt" | The current code path. | A change you write. Choose a concrete treatment (for example a specific cheaper model from the same provider that the application's SDK supports) and include the code change in the proposal. |
+| Two existing options | "compare prompt version 3 to version 4" | The option the application uses today. | The other option, wired in behind the flag. |
+
+Requests can also set inputs that otherwise use a default, such as a traffic split ("50-50", "send 10% to the treatment"), a metric ("without lowering the faithfulness score"), or the environment. Use what the user stated instead of the default, and use the defaults below for anything they left out.
+
+If the shape is unclear, for example the user asks to test "my changes" while the branch has no diff against its base and there are no uncommitted edits, ask which change they mean. That is a blocking ambiguity.
+
+Both variants run in the same deployed build. An online experiment never deploys the branch on its own: the treatment has to live next to the control behind the flag (Phase 2). For an existing change, plan how to put only the behavioral part of the diff behind the flag. Refactors, tests, and other changes that do not alter what the application does can ship to everyone.
+
+### Discover
 
 - Inspect the active tool list and verify that the session has the `llmobs`, `experiments`, and `feature-flags` capabilities needed by this workflow: environment discovery; flag lookup, creation, enablement, and allocation management; experiment lookup, creation, linking, and start; and experiment-metric lookup, creation, and attachment. The skill's toolset configuration controls its visibility with OR semantics; it does not guarantee that all three toolsets are enabled. If capabilities are missing, report every missing group and the toolset to enable, then stop before any write instead of repeatedly retrying individual operations.
-- Inspect the application and its deployment configuration. Confirm it reports to Agent Observability, find where it submits evaluations (if it does), find the code path the treatment changes, and infer its `ml_app`, `DD_ENV`, and stable subject identifier.
+- Inspect the application and its deployment configuration. Confirm it reports to Agent Observability, find where it submits evaluations (if it does), find the code path the treatment changes (or, for a described change, the code path it will change), and infer its `ml_app`, `DD_ENV`, and stable subject identifier.
 - List environments, look for an existing flag and experiment for the proposed change, and search existing experiment metrics before proposing new objects.
 
 Then establish the complete proposal. Infer from context and use the defaults below wherever reasonable:
@@ -46,11 +68,11 @@ Then establish the complete proposal. Infer from context and use the defaults be
 | Input | Notes |
 |---|---|
 | Application and its ML app name | The `ml_app` the application reports to Agent Observability. |
-| Control and treatment | What differs between them. Usually the control is the current code path and the treatment is the change under test. |
+| Control and treatment | What differs between them, from the request shape above. For a described change, name the concrete treatment (for example the exact model name). |
 | Hypothesis | Draft one or two sentences stating the expected mechanism and effect on quality, tokens, or cost. |
 | Score metric(s) | Recommend the most relevant existing numeric evaluation score, including its desired-change direction. See Phase 4. |
 | Environment | Infer from deployment configuration and the user's live-traffic goal. An experiment links to exactly one environment. |
-| Traffic split | Default 50/50 control/treatment. |
+| Traffic split | Use the split the user asked for. Otherwise default to 50/50 control/treatment. |
 | Flag name | Default to a short, descriptive, kebab-case name. |
 | Subject | What counts as one subject. See Phase 2. |
 
@@ -59,7 +81,7 @@ When metric-name search is needed, try naming variants before concluding that no
 Present one compact confirmation request containing:
 
 - application and `ml_app`;
-- control, treatment, and hypothesis;
+- control, treatment, and hypothesis, including where the treatment comes from (the branch diff, or a change you will write);
 - proposed flag key and Boolean variants;
 - subject identifier and code location where the flag will be evaluated;
 - target environment and 50/50 or proposed split;
@@ -96,6 +118,10 @@ Use the same value in three places: the feature flag evaluation context's `targe
 **Evaluate the flag.** Follow the Feature Flags SDK for the application's language. For Python this means a recent `ddtrace` plus the OpenFeature SDK, registering the Datadog provider once, and evaluating a Boolean flag with `targeting_key` set to the subject identifier. The SDK needs the Datadog API key, site, and `DD_ENV` set. Default the evaluation to `false` (control) and catch failures so a flag outage degrades to control instead of breaking the app.
 
 Feature-flag management guidance may point to a React integration resource regardless of the application's language. Treat that as generic tool guidance, not as an instruction to add React code. Follow the SDK for the application's actual language and prefer an existing working provider/evaluation pattern in the repository.
+
+**Put the treatment behind the flag.** Keep the control behavior unchanged for subjects that get `false`.
+- For an existing change in a Git branch, move the behavioral part of the diff into the `true` branch of the flag check, and restore the base branch's behavior in the `false` branch. Do not merge, rebase, or push branches unless the user asks.
+- For a described change, write the treatment in the `true` branch. For a model comparison, change only the model (and parameters the new model requires), so the comparison measures the model and nothing else.
 
 **Choose where the variant is applied.** If the behavior is baked into state that persists (for example a system prompt stored in a conversation object), evaluate the flag once when that state is created, not on every call, so a subject cannot change variants mid-interaction. Derive the treatment from the control in code where possible so the two cannot drift.
 
@@ -220,3 +246,4 @@ For reading the results once enough data has arrived, use `agent-observability-e
 - Metric `desired change` set the wrong way round.
 - Attaching metrics in parallel.
 - Starting before the user has asked, or before the flag is enabled where the app runs.
+- Deploying a branch's change to everyone instead of putting it behind the flag next to the control.

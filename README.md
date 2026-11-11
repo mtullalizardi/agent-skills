@@ -242,7 +242,9 @@ Look at the errors on <ml_app> over the last 24h
 /agent-observability-experiment-bootstrap --adapter node --format mjs --task-source app:answer # Node SDK artifact
 
 # Create a live-traffic Agent Observability experiment
-/agent-observability-online-experiment
+/agent-observability-online-experiment Start an online experiment to compare the changes in my current Git branch to main.
+/agent-observability-online-experiment Start an online experiment with 50-50 traffic to compare the current model and a cheaper model.
+/agent-observability-online-experiment Start an online experiment to test whether a more concise system prompt reduces token usage without lowering quality.
 
 # Classify a session
 /agent-observability-session-classify <session_id>
